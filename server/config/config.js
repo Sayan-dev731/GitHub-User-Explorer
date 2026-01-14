@@ -1,4 +1,11 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+
+// Debug: Check if token is loaded
+if (process.env.GITHUB_TOKEN) {
+    console.log('✓ GitHub Token loaded successfully');
+} else {
+    console.log('⚠️  Warning: GitHub Token not found. Rate limits will be lower.');
+}
 
 module.exports = {
     port: process.env.PORT || 3000,

@@ -415,11 +415,11 @@ document.addEventListener('keydown', (e) => {
 /* --- INTERACTIONS --- */
 
 /**
- * Handle search - Search for exact username or search users
+ * Handle search - Search for users and display a list of matching profiles
  */
 async function handleSearch(searchTerm) {
     const term = searchTerm.trim();
-    
+
     // Validate empty input
     if (term === '') {
         showToast('⚠️ Please enter a username to search');
@@ -429,39 +429,121 @@ async function handleSearch(searchTerm) {
 
     showLoading();
 
-    // First, try to find exact user match
-    const exactMatch = await searchUserByUsername(term);
-    
-    if (exactMatch.found && exactMatch.user) {
-        // Found exact user - show their profile card and details
-        displaySingleUserProfile(exactMatch.user);
+    // Search for users matching the term
+    const results = await searchUsers(term);
+
+    if (results.length === 0) {
+        showUserNotFound(term);
     } else {
-        // No exact match - search for users containing the term
-        const results = await searchUsers(term);
-        
-        if (results.length === 0) {
-            showUserNotFound(term);
-        } else {
-            const enrichedResults = results.map(user => ({
-                ...user,
-                price: user.followers || 0,
-                category: user.type,
-                title: user.login
-            }));
-            renderGrid(enrichedResults);
-        }
+        // Display search results as a grid of profiles
+        renderSearchResults(results, term);
     }
 }
 
 /**
- * Display single user profile with full details
+ * Render search results with enhanced cards
+ */
+function renderSearchResults(users, searchTerm) {
+    grid.innerHTML = '';
+
+    // Add search header
+    const searchHeader = document.createElement('div');
+    searchHeader.className = 'search-header';
+    searchHeader.style.cssText = 'grid-column: 1 / -1; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;';
+    searchHeader.innerHTML = `
+        <div>
+            <h2 style="font-family: 'Orbitron', sans-serif; font-size: 1.5rem; margin-bottom: 5px;">
+                <i class="fa-solid fa-search" style="color: #58a6ff;"></i> Search Results for "${searchTerm}"
+            </h2>
+            <p style="color: rgba(255,255,255,0.6); font-size: 0.9rem;">${users.length} profiles found</p>
+        </div>
+        <button onclick="searchInput.value=''; renderGrid(usersData);" class="btn btn-outline" style="padding: 10px 20px;">
+            <i class="fa-solid fa-times"></i> Clear Search
+        </button>
+    `;
+    grid.appendChild(searchHeader);
+
+    if (users.length === 0) {
+        grid.innerHTML += '<div class="empty-state">No profiles found matching criteria.</div>';
+        return;
+    }
+
+    users.forEach((user, index) => {
+        const card = document.createElement('article');
+        card.className = 'profile-card search-result-card';
+        card.style.opacity = '0';
+        card.style.animation = `fadeInUp 0.6s ${(index % 15) * 0.05}s forwards`;
+
+        const isFollowing = cart.has(user.login);
+
+        card.innerHTML = `
+            <div class="card-img-wrapper" onclick="viewUserProfile('${user.login}')" style="cursor: pointer;">
+                <img src="${user.avatar_url}" alt="${user.login}" loading="lazy">
+                <div class="card-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 50%); opacity: 0; transition: opacity 0.3s ease;"></div>
+            </div>
+            <div class="card-content">
+                <span class="card-category">${user.type || 'User'}</span>
+                <h3 class="card-title">${user.login}</h3>
+                <div class="card-score" style="font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 10px;">
+                    ${user.score ? `<i class="fa-solid fa-star" style="color: #ffa657;"></i> Match Score: ${user.score.toFixed(1)}` : ''}
+                </div>
+                <div class="card-actions">
+                    <button class="btn btn-primary" onclick="viewUserProfile('${user.login}')" style="padding: 8px 16px; font-size: 13px; flex: 1;">
+                        <i class="fa-solid fa-eye"></i> View Profile
+                    </button>
+                    <button class="add-btn ${isFollowing ? 'following' : ''}" 
+                            onclick="toggleFollow('${user.login}', this)"
+                            style="${isFollowing ? 'background: var(--color-fg-default); color: white;' : ''}">
+                        <i class="fa-solid fa-${isFollowing ? 'check' : 'plus'}"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+
+        // Add hover effect for overlay
+        const imgWrapper = card.querySelector('.card-img-wrapper');
+        const overlay = card.querySelector('.card-overlay');
+        imgWrapper.addEventListener('mouseenter', () => overlay.style.opacity = '1');
+        imgWrapper.addEventListener('mouseleave', () => overlay.style.opacity = '0');
+
+        grid.appendChild(card);
+    });
+}
+
+/**
+ * View user profile - fetch detailed info and display
+ */
+async function viewUserProfile(username) {
+    showLoading();
+
+    // Fetch the full user details
+    const userData = await fetchUserProfile(username);
+
+    if (userData) {
+        displaySingleUserProfile(userData);
+    } else {
+        showUserNotFound(username);
+    }
+}
+
+/**
+ * Display single user profile with full details and enhanced features
  */
 async function displaySingleUserProfile(user) {
     // Fetch additional data for the user
-    const [repos, followers] = await Promise.all([
+    const [repos, followers, gists, following] = await Promise.all([
         fetchUserRepos(user.login),
-        fetchUserFollowers(user.login)
+        fetchUserFollowers(user.login),
+        fetchUserGists(user.login),
+        fetchUserFollowing(user.login)
     ]);
+
+    // Calculate stats from repos
+    const totalStars = repos.reduce((sum, repo) => sum + (repo.stargazers_count || 0), 0);
+    const totalForks = repos.reduce((sum, repo) => sum + (repo.forks_count || 0), 0);
+    const languages = [...new Set(repos.filter(r => r.language).map(r => r.language))];
+    const accountAge = getAccountAge(user.created_at);
+    const lastActive = getLastActive(user.updated_at);
 
     grid.innerHTML = `
         <div class="single-user-result" style="grid-column: 1 / -1;">
@@ -474,13 +556,14 @@ async function displaySingleUserProfile(user) {
                         <h2 style="margin-top: 20px; font-family: 'Orbitron', sans-serif; font-size: 1.5rem;">${user.name || user.login}</h2>
                         <p style="color: rgba(255,255,255,0.6); font-family: 'IBM Plex Mono', monospace;">@${user.login}</p>
                         <span style="display: inline-block; padding: 5px 15px; background: linear-gradient(135deg, ${user.type === 'Organization' ? '#bf3989, #8250df' : '#0969da, #8250df'}); border-radius: 20px; font-size: 0.8rem; margin-top: 10px;">${user.type}</span>
+                        ${user.hireable ? `<div style="margin-top: 10px; padding: 5px 15px; background: linear-gradient(135deg, #2ea043, #7ee787); border-radius: 20px; font-size: 0.75rem;"><i class="fa-solid fa-briefcase"></i> Available for hire</div>` : ''}
                     </div>
                     
                     <!-- User Info Section -->
                     <div style="flex: 1; min-width: 300px;">
                         ${user.bio ? `<p style="font-size: 1.1rem; line-height: 1.6; margin-bottom: 20px; color: rgba(255,255,255,0.8);">${user.bio}</p>` : ''}
                         
-                        <!-- Stats -->
+                        <!-- Main Stats -->
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 20px; margin-bottom: 25px; padding: 20px; background: rgba(255,255,255,0.05); border-radius: 12px;">
                             <div style="text-align: center;">
                                 <div style="font-family: 'Orbitron', sans-serif; font-size: 1.5rem; font-weight: 700; color: #58a6ff;">${user.public_repos || 0}</div>
@@ -494,21 +577,45 @@ async function displaySingleUserProfile(user) {
                                 <div style="font-family: 'Orbitron', sans-serif; font-size: 1.5rem; font-weight: 700; color: #7ee787;">${user.following || 0}</div>
                                 <div style="font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: rgba(255,255,255,0.5);">Following</div>
                             </div>
+                            <div style="text-align: center;">
+                                <div style="font-family: 'Orbitron', sans-serif; font-size: 1.5rem; font-weight: 700; color: #ffa657;">${totalStars}</div>
+                                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: rgba(255,255,255,0.5);">Total Stars</div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-family: 'Orbitron', sans-serif; font-size: 1.5rem; font-weight: 700; color: #a5d6ff;">${totalForks}</div>
+                                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: rgba(255,255,255,0.5);">Total Forks</div>
+                            </div>
                             ${user.public_gists ? `
                             <div style="text-align: center;">
-                                <div style="font-family: 'Orbitron', sans-serif; font-size: 1.5rem; font-weight: 700; color: #ffa657;">${user.public_gists}</div>
+                                <div style="font-family: 'Orbitron', sans-serif; font-size: 1.5rem; font-weight: 700; color: #d2a8ff;">${user.public_gists}</div>
                                 <div style="font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: rgba(255,255,255,0.5);">Gists</div>
                             </div>
                             ` : ''}
+                        </div>
+                        
+                        <!-- Account Info -->
+                        <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 25px; padding: 15px 20px; background: rgba(255,255,255,0.03); border-radius: 10px; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.6); font-size: 0.85rem;">
+                                <i class="fa-solid fa-calendar-plus" style="color: #7ee787;"></i> 
+                                <span>Joined ${accountAge}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.6); font-size: 0.85rem;">
+                                <i class="fa-solid fa-clock" style="color: #58a6ff;"></i> 
+                                <span>Last active ${lastActive}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.6); font-size: 0.85rem;">
+                                <i class="fa-solid fa-id-card" style="color: #ffa657;"></i> 
+                                <span>ID: ${user.id}</span>
+                            </div>
                         </div>
                         
                         <!-- Additional Info -->
                         <div style="display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 25px;">
                             ${user.location ? `<div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7);"><i class="fa-solid fa-location-dot"></i> ${user.location}</div>` : ''}
                             ${user.company ? `<div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7);"><i class="fa-solid fa-building"></i> ${user.company}</div>` : ''}
-                            ${user.email ? `<div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7);"><i class="fa-solid fa-envelope"></i> ${user.email}</div>` : ''}
+                            ${user.email ? `<div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7);"><i class="fa-solid fa-envelope"></i> <a href="mailto:${user.email}" style="color: #58a6ff;">${user.email}</a></div>` : ''}
                             ${user.blog ? `<div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7);"><i class="fa-solid fa-globe"></i> <a href="${user.blog.startsWith('http') ? user.blog : 'https://' + user.blog}" target="_blank" style="color: #58a6ff;">${user.blog}</a></div>` : ''}
-                            ${user.twitter_username ? `<div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7);"><i class="fa-brands fa-twitter"></i> @${user.twitter_username}</div>` : ''}
+                            ${user.twitter_username ? `<div style="display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,0.7);"><i class="fa-brands fa-twitter"></i> <a href="https://twitter.com/${user.twitter_username}" target="_blank" style="color: #1da1f2;">@${user.twitter_username}</a></div>` : ''}
                         </div>
                         
                         <!-- Action Buttons -->
@@ -519,7 +626,10 @@ async function displaySingleUserProfile(user) {
                             <button onclick="toggleFollow('${user.login}', this)" class="follow-btn ${cart.has(user.login) ? 'following' : ''}" style="padding: 12px 25px; background: ${cart.has(user.login) ? 'linear-gradient(135deg, #2ea043, #0969da)' : 'transparent'}; border: 1px solid rgba(255,255,255,0.3); border-radius: 8px; color: #fff; font-family: 'Orbitron', sans-serif; font-weight: 600; cursor: pointer;">
                                 <i class="fa-solid fa-${cart.has(user.login) ? 'check' : 'user-plus'}"></i> ${cart.has(user.login) ? 'Following' : 'Follow'}
                             </button>
-                            <button onclick="renderGrid(usersData)" style="padding: 12px 25px; background: transparent; border: 1px solid rgba(255,255,255,0.3); border-radius: 8px; color: #fff; font-family: 'Orbitron', sans-serif; font-weight: 600; cursor: pointer;">
+                            <button onclick="shareProfile('${user.login}')" style="padding: 12px 25px; background: transparent; border: 1px solid rgba(255,255,255,0.3); border-radius: 8px; color: #fff; font-family: 'Orbitron', sans-serif; font-weight: 600; cursor: pointer;">
+                                <i class="fa-solid fa-share-nodes"></i> Share
+                            </button>
+                            <button onclick="searchInput.value=''; renderGrid(usersData);" style="padding: 12px 25px; background: transparent; border: 1px solid rgba(255,255,255,0.3); border-radius: 8px; color: #fff; font-family: 'Orbitron', sans-serif; font-weight: 600; cursor: pointer;">
                                 <i class="fa-solid fa-arrow-left"></i> Back to All Users
                             </button>
                         </div>
@@ -527,52 +637,373 @@ async function displaySingleUserProfile(user) {
                 </div>
             </div>
             
-            <!-- Repositories Section -->
+            <!-- Languages Used -->
+            ${languages.length > 0 ? `
+            <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; margin-bottom: 30px;">
+                <h3 style="font-family: 'Orbitron', sans-serif; font-size: 1.3rem; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+                    <i class="fa-solid fa-code" style="color: #d2a8ff;"></i> Programming Languages (${languages.length})
+                </h3>
+                <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+                    ${languages.map(lang => `
+                        <span style="padding: 8px 18px; background: ${getLanguageColor(lang)}22; border: 1px solid ${getLanguageColor(lang)}44; border-radius: 20px; font-size: 0.9rem; font-family: 'IBM Plex Mono', monospace; color: ${getLanguageColor(lang)};">
+                            <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: ${getLanguageColor(lang)}; margin-right: 8px;"></span>${lang}
+                        </span>
+                    `).join('')}
+                </div>
+            </div>
+            ` : ''}
+            
+            <!-- Top Repositories Section -->
             ${repos && repos.length > 0 ? `
             <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; margin-bottom: 30px;">
                 <h3 style="font-family: 'Orbitron', sans-serif; font-size: 1.3rem; margin-bottom: 25px; display: flex; align-items: center; gap: 10px;">
-                    <i class="fa-solid fa-code-branch" style="color: #7ee787;"></i> Public Repositories (${repos.length})
+                    <i class="fa-solid fa-code-branch" style="color: #7ee787;"></i> Top Repositories (${repos.length})
                 </h3>
                 <div style="display: grid; gap: 15px;">
-                    ${repos.map(repo => `
-                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 20px; transition: all 0.3s ease;" onmouseover="this.style.borderColor='rgba(255,255,255,0.3)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)'">
+                    ${repos.slice(0, 6).map(repo => `
+                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 20px; transition: all 0.3s ease;" onmouseover="this.style.borderColor='rgba(255,255,255,0.3)'; this.style.transform='translateX(5px)';" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)'; this.style.transform='none';">
                             <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
                                 <a href="${repo.html_url}" target="_blank" style="font-family: 'Orbitron', sans-serif; font-size: 1.1rem; color: #58a6ff; text-decoration: none; display: flex; align-items: center; gap: 8px;">
                                     <i class="fa-solid fa-book"></i> ${repo.name}
+                                    ${repo.fork ? '<span style="font-size: 0.7rem; padding: 2px 8px; background: rgba(255,255,255,0.1); border-radius: 10px;">Fork</span>' : ''}
                                 </a>
-                                ${repo.language ? `<span style="padding: 4px 12px; background: rgba(255,255,255,0.1); border-radius: 15px; font-size: 0.75rem; font-family: 'IBM Plex Mono', monospace;">${repo.language}</span>` : ''}
+                                <div style="display: flex; gap: 8px;">
+                                    ${repo.language ? `<span style="padding: 4px 12px; background: ${getLanguageColor(repo.language)}33; border-radius: 15px; font-size: 0.75rem; font-family: 'IBM Plex Mono', monospace; color: ${getLanguageColor(repo.language)};">${repo.language}</span>` : ''}
+                                    ${repo.archived ? '<span style="padding: 4px 12px; background: rgba(255,100,100,0.2); border-radius: 15px; font-size: 0.75rem; color: #ff6b6b;">Archived</span>' : ''}
+                                </div>
                             </div>
                             ${repo.description ? `<p style="color: rgba(255,255,255,0.7); font-size: 0.9rem; line-height: 1.5; margin-bottom: 15px;">${repo.description}</p>` : '<p style="color: rgba(255,255,255,0.4); font-size: 0.9rem; margin-bottom: 15px;">No description provided</p>'}
                             <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.85rem; color: rgba(255,255,255,0.6);">
                                 <span style="display: flex; align-items: center; gap: 5px;"><i class="fa-solid fa-star" style="color: #ffa657;"></i> ${repo.stargazers_count}</span>
                                 <span style="display: flex; align-items: center; gap: 5px;"><i class="fa-solid fa-code-fork" style="color: #7ee787;"></i> ${repo.forks_count}</span>
-                                ${repo.watchers_count ? `<span style="display: flex; align-items: center; gap: 5px;"><i class="fa-solid fa-eye" style="color: #58a6ff;"></i> ${repo.watchers_count}</span>` : ''}
-                                <a href="${repo.html_url}" target="_blank" style="display: flex; align-items: center; gap: 5px; color: #58a6ff; text-decoration: none; margin-left: auto;"><i class="fa-solid fa-external-link"></i> View Repo</a>
+                                <span style="display: flex; align-items: center; gap: 5px;"><i class="fa-solid fa-eye" style="color: #58a6ff;"></i> ${repo.watchers_count}</span>
+                                ${repo.open_issues_count ? `<span style="display: flex; align-items: center; gap: 5px;"><i class="fa-solid fa-circle-dot" style="color: #f778ba;"></i> ${repo.open_issues_count} issues</span>` : ''}
+                                <span style="display: flex; align-items: center; gap: 5px;"><i class="fa-solid fa-clock" style="color: #a5d6ff;"></i> Updated ${formatDate(repo.updated_at)}</span>
+                                ${repo.license ? `<span style="display: flex; align-items: center; gap: 5px;"><i class="fa-solid fa-scale-balanced" style="color: #d2a8ff;"></i> ${repo.license.spdx_id || repo.license.name}</span>` : ''}
+                            </div>
+                            ${repo.topics && repo.topics.length > 0 ? `
+                            <div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;">
+                                ${repo.topics.slice(0, 5).map(topic => `
+                                    <span style="padding: 3px 10px; background: rgba(88, 166, 255, 0.15); border-radius: 12px; font-size: 0.7rem; color: #58a6ff;">#${topic}</span>
+                                `).join('')}
+                            </div>
+                            ` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+                ${repos.length > 6 ? `
+                <div style="text-align: center; margin-top: 20px;">
+                    <a href="${user.html_url}?tab=repositories" target="_blank" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 25px; background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #58a6ff; text-decoration: none; font-size: 0.9rem;">
+                        View all ${user.public_repos} repositories <i class="fa-solid fa-external-link"></i>
+                    </a>
+                </div>
+                ` : ''}
+            </div>
+            ` : '<div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; text-align: center; color: rgba(255,255,255,0.5); margin-bottom: 30px;">No public repositories</div>'}
+            
+            <!-- Gists Section -->
+            ${gists && gists.length > 0 ? `
+            <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; margin-bottom: 30px;">
+                <h3 style="font-family: 'Orbitron', sans-serif; font-size: 1.3rem; margin-bottom: 25px; display: flex; align-items: center; gap: 10px;">
+                    <i class="fa-solid fa-file-code" style="color: #d2a8ff;"></i> Public Gists (${gists.length})
+                </h3>
+                <div style="display: grid; gap: 15px;">
+                    ${gists.slice(0, 4).map(gist => `
+                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 20px; transition: all 0.3s ease;" onmouseover="this.style.borderColor='rgba(255,255,255,0.3)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.1)'">
+                            <a href="${gist.html_url}" target="_blank" style="font-family: 'Orbitron', sans-serif; font-size: 1rem; color: #d2a8ff; text-decoration: none; display: block; margin-bottom: 10px;">
+                                <i class="fa-solid fa-file-code"></i> ${gist.description || Object.keys(gist.files)[0] || 'Untitled Gist'}
+                            </a>
+                            <div style="display: flex; gap: 15px; flex-wrap: wrap; font-size: 0.85rem; color: rgba(255,255,255,0.6);">
+                                <span><i class="fa-solid fa-file"></i> ${Object.keys(gist.files).length} file(s)</span>
+                                <span><i class="fa-solid fa-comment"></i> ${gist.comments} comments</span>
+                                <span><i class="fa-solid fa-clock"></i> Created ${formatDate(gist.created_at)}</span>
+                            </div>
+                            <div style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px;">
+                                ${Object.keys(gist.files).slice(0, 3).map(filename => `
+                                    <span style="padding: 3px 10px; background: rgba(210, 168, 255, 0.15); border-radius: 10px; font-size: 0.75rem; color: #d2a8ff; font-family: 'IBM Plex Mono', monospace;">${filename}</span>
+                                `).join('')}
                             </div>
                         </div>
                     `).join('')}
                 </div>
             </div>
-            ` : '<div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; text-align: center; color: rgba(255,255,255,0.5);">No public repositories</div>'}
+            ` : ''}
             
             <!-- Followers Section -->
             ${followers && followers.length > 0 ? `
-            <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px;">
+            <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; margin-bottom: 30px;">
                 <h3 style="font-family: 'Orbitron', sans-serif; font-size: 1.3rem; margin-bottom: 25px; display: flex; align-items: center; gap: 10px;">
                     <i class="fa-solid fa-users" style="color: #f778ba;"></i> Followers (${user.followers || followers.length})
                 </h3>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 20px;">
-                    ${followers.slice(0, 20).map(follower => `
-                        <div onclick="handleSearch('${follower.login}')" style="text-align: center; cursor: pointer; padding: 15px; border-radius: 12px; transition: all 0.3s ease; background: rgba(255,255,255,0.03);" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.03)'">
-                            <img src="${follower.avatar_url}" alt="${follower.login}" style="width: 60px; height: 60px; border-radius: 50%; margin-bottom: 10px; border: 2px solid rgba(255,255,255,0.2);">
-                            <div style="font-size: 0.85rem; color: rgba(255,255,255,0.8); word-break: break-all;">${follower.login}</div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 15px;">
+                    ${followers.slice(0, 18).map(follower => `
+                        <div onclick="viewUserProfile('${follower.login}')" style="text-align: center; cursor: pointer; padding: 15px 10px; border-radius: 12px; transition: all 0.3s ease; background: rgba(255,255,255,0.03);" onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.transform='scale(1.05)';" onmouseout="this.style.background='rgba(255,255,255,0.03)'; this.style.transform='none';">
+                            <img src="${follower.avatar_url}" alt="${follower.login}" style="width: 50px; height: 50px; border-radius: 50%; margin-bottom: 8px; border: 2px solid rgba(255,255,255,0.2);">
+                            <div style="font-size: 0.8rem; color: rgba(255,255,255,0.8); word-break: break-all;">${follower.login}</div>
                         </div>
                     `).join('')}
                 </div>
+                ${user.followers > 18 ? `
+                <div style="text-align: center; margin-top: 20px;">
+                    <a href="${user.html_url}?tab=followers" target="_blank" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 25px; background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #f778ba; text-decoration: none; font-size: 0.9rem;">
+                        View all ${user.followers} followers <i class="fa-solid fa-external-link"></i>
+                    </a>
+                </div>
+                ` : ''}
             </div>
             ` : ''}
+            
+            <!-- Following Section -->
+            ${following && following.length > 0 ? `
+            <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; margin-bottom: 30px;">
+                <h3 style="font-family: 'Orbitron', sans-serif; font-size: 1.3rem; margin-bottom: 25px; display: flex; align-items: center; gap: 10px;">
+                    <i class="fa-solid fa-user-group" style="color: #7ee787;"></i> Following (${user.following})
+                </h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 15px;">
+                    ${following.slice(0, 12).map(followedUser => `
+                        <div onclick="viewUserProfile('${followedUser.login}')" style="text-align: center; cursor: pointer; padding: 15px 10px; border-radius: 12px; transition: all 0.3s ease; background: rgba(255,255,255,0.03);" onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.transform='scale(1.05)';" onmouseout="this.style.background='rgba(255,255,255,0.03)'; this.style.transform='none';">
+                            <img src="${followedUser.avatar_url}" alt="${followedUser.login}" style="width: 50px; height: 50px; border-radius: 50%; margin-bottom: 8px; border: 2px solid rgba(255,255,255,0.2);">
+                            <div style="font-size: 0.8rem; color: rgba(255,255,255,0.8); word-break: break-all;">${followedUser.login}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                ${user.following > 12 ? `
+                <div style="text-align: center; margin-top: 20px;">
+                    <a href="${user.html_url}?tab=following" target="_blank" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 25px; background: transparent; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #7ee787; text-decoration: none; font-size: 0.9rem;">
+                        View all ${user.following} following <i class="fa-solid fa-external-link"></i>
+                    </a>
+                </div>
+                ` : ''}
+            </div>
+            ` : ''}
+            
+            <!-- Quick Stats Summary -->
+            <div style="background: linear-gradient(135deg, rgba(9,105,218,0.1), rgba(130,80,223,0.1), rgba(191,57,137,0.1)); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; margin-bottom: 30px;">
+                <h3 style="font-family: 'Orbitron', sans-serif; font-size: 1.3rem; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+                    <i class="fa-solid fa-chart-line" style="color: #58a6ff;"></i> Profile Summary
+                </h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                    <div style="padding: 20px; background: rgba(255,255,255,0.05); border-radius: 12px;">
+                        <div style="font-size: 0.85rem; color: rgba(255,255,255,0.5); margin-bottom: 8px;">Engagement Rate</div>
+                        <div style="font-family: 'Orbitron', sans-serif; font-size: 1.8rem; color: #58a6ff;">${calculateEngagementRate(user, totalStars)}%</div>
+                        <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); margin-top: 5px;">Based on stars per repo</div>
+                    </div>
+                    <div style="padding: 20px; background: rgba(255,255,255,0.05); border-radius: 12px;">
+                        <div style="font-size: 0.85rem; color: rgba(255,255,255,0.5); margin-bottom: 8px;">Follower/Following Ratio</div>
+                        <div style="font-family: 'Orbitron', sans-serif; font-size: 1.8rem; color: #f778ba;">${calculateFollowerRatio(user)}</div>
+                        <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); margin-top: 5px;">${getFollowerRatioLabel(user)}</div>
+                    </div>
+                    <div style="padding: 20px; background: rgba(255,255,255,0.05); border-radius: 12px;">
+                        <div style="font-size: 0.85rem; color: rgba(255,255,255,0.5); margin-bottom: 8px;">Activity Score</div>
+                        <div style="font-family: 'Orbitron', sans-serif; font-size: 1.8rem; color: #7ee787;">${calculateActivityScore(user, repos)}</div>
+                        <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); margin-top: 5px;">Based on recent activity</div>
+                    </div>
+                    <div style="padding: 20px; background: rgba(255,255,255,0.05); border-radius: 12px;">
+                        <div style="font-size: 0.85rem; color: rgba(255,255,255,0.5); margin-bottom: 8px;">Profile Completeness</div>
+                        <div style="font-family: 'Orbitron', sans-serif; font-size: 1.8rem; color: #ffa657;">${calculateProfileCompleteness(user)}%</div>
+                        <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); margin-top: 5px;">Profile info filled</div>
+                    </div>
+                </div>
+            </div>
         </div>
     `;
+}
+
+/* --- HELPER FUNCTIONS --- */
+
+/**
+ * Fetch user's following list
+ */
+async function fetchUserFollowing(username) {
+    try {
+        const response = await fetch(`${API_URL}/user/${username}/following`);
+        const result = await response.json();
+
+        if (result.success) {
+            return result.data;
+        }
+        return [];
+    } catch (error) {
+        console.error("Error fetching following:", error);
+        return [];
+    }
+}
+
+/**
+ * Get language color
+ */
+function getLanguageColor(language) {
+    const colors = {
+        JavaScript: '#f1e05a',
+        TypeScript: '#3178c6',
+        Python: '#3572A5',
+        Java: '#b07219',
+        'C++': '#f34b7d',
+        C: '#555555',
+        'C#': '#178600',
+        Ruby: '#701516',
+        Go: '#00ADD8',
+        Rust: '#dea584',
+        PHP: '#4F5D95',
+        Swift: '#ffac45',
+        Kotlin: '#A97BFF',
+        Dart: '#00B4AB',
+        HTML: '#e34c26',
+        CSS: '#563d7c',
+        Shell: '#89e051',
+        Vue: '#41b883',
+        React: '#61dafb',
+        Scala: '#c22d40',
+        Haskell: '#5e5086',
+        Lua: '#000080',
+        Perl: '#0298c3',
+        R: '#198CE7',
+        Julia: '#a270ba',
+        Elixir: '#6e4a7e',
+        Clojure: '#db5855'
+    };
+    return colors[language] || '#8b949e';
+}
+
+/**
+ * Format date helper
+ */
+function formatDate(dateString) {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffTime = Math.abs(now - date);
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) return 'today';
+    if (diffDays === 1) return 'yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
+    return `${Math.floor(diffDays / 365)} years ago`;
+}
+
+/**
+ * Get account age
+ */
+function getAccountAge(createdAt) {
+    const date = new Date(createdAt);
+    const now = new Date();
+    const diffTime = Math.abs(now - date);
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    const years = Math.floor(diffDays / 365);
+    const months = Math.floor((diffDays % 365) / 30);
+
+    if (years > 0) {
+        return `${years} year${years > 1 ? 's' : ''}${months > 0 ? `, ${months} month${months > 1 ? 's' : ''}` : ''} ago`;
+    }
+    return `${months} month${months > 1 ? 's' : ''} ago`;
+}
+
+/**
+ * Get last active time
+ */
+function getLastActive(updatedAt) {
+    return formatDate(updatedAt);
+}
+
+/**
+ * Calculate engagement rate
+ */
+function calculateEngagementRate(user, totalStars) {
+    if (!user.public_repos || user.public_repos === 0) return 0;
+    const avgStarsPerRepo = totalStars / user.public_repos;
+    // Scale to percentage (0-100)
+    return Math.min(100, (avgStarsPerRepo * 10)).toFixed(1);
+}
+
+/**
+ * Calculate follower ratio
+ */
+function calculateFollowerRatio(user) {
+    if (!user.following || user.following === 0) return user.followers || 0;
+    return (user.followers / user.following).toFixed(2);
+}
+
+/**
+ * Get follower ratio label
+ */
+function getFollowerRatioLabel(user) {
+    const ratio = calculateFollowerRatio(user);
+    if (ratio > 10) return 'Highly influential';
+    if (ratio > 5) return 'Very popular';
+    if (ratio > 1) return 'Growing influence';
+    if (ratio > 0.5) return 'Active networker';
+    return 'Community explorer';
+}
+
+/**
+ * Calculate activity score
+ */
+function calculateActivityScore(user, repos) {
+    let score = 0;
+
+    // Recent activity bonus
+    const lastUpdate = new Date(user.updated_at);
+    const daysSinceUpdate = (new Date() - lastUpdate) / (1000 * 60 * 60 * 24);
+    if (daysSinceUpdate < 7) score += 30;
+    else if (daysSinceUpdate < 30) score += 20;
+    else if (daysSinceUpdate < 90) score += 10;
+
+    // Repo count bonus
+    if (user.public_repos > 50) score += 25;
+    else if (user.public_repos > 20) score += 20;
+    else if (user.public_repos > 10) score += 15;
+    else if (user.public_repos > 0) score += 10;
+
+    // Recent repo updates
+    if (repos && repos.length > 0) {
+        const recentRepos = repos.filter(r => {
+            const daysSince = (new Date() - new Date(r.updated_at)) / (1000 * 60 * 60 * 24);
+            return daysSince < 30;
+        });
+        score += Math.min(25, recentRepos.length * 5);
+    }
+
+    // Gists bonus
+    if (user.public_gists > 0) score += Math.min(10, user.public_gists * 2);
+
+    return Math.min(100, score);
+}
+
+/**
+ * Calculate profile completeness
+ */
+function calculateProfileCompleteness(user) {
+    let filled = 0;
+    const fields = ['name', 'bio', 'location', 'company', 'blog', 'email', 'twitter_username', 'avatar_url'];
+
+    fields.forEach(field => {
+        if (user[field] && user[field] !== '') filled++;
+    });
+
+    return Math.round((filled / fields.length) * 100);
+}
+
+/**
+ * Share profile function
+ */
+function shareProfile(username) {
+    const url = `https://github.com/${username}`;
+
+    if (navigator.share) {
+        navigator.share({
+            title: `${username}'s GitHub Profile`,
+            text: `Check out ${username}'s GitHub profile!`,
+            url: url
+        }).catch(console.error);
+    } else {
+        // Fallback - copy to clipboard
+        navigator.clipboard.writeText(url).then(() => {
+            showToast(`📋 Profile link copied to clipboard!`);
+        }).catch(() => {
+            showToast(`🔗 ${url}`);
+        });
+    }
 }
 
 /**
@@ -625,12 +1056,12 @@ searchInput.addEventListener('keypress', (e) => {
         e.preventDefault();
         clearTimeout(searchTimeout);
         const term = searchInput.value.trim();
-        
+
         if (term === '') {
             showToast('⚠️ Please enter a username to search');
             return;
         }
-        
+
         handleSearch(term);
     }
 });
@@ -710,7 +1141,7 @@ function showToast(msg) {
 function scrollToGrid() {
     const profileGrid = document.getElementById('profileGrid');
     const profilesSection = document.getElementById('profiles');
-    
+
     // Try to scroll to the profiles section first, then the grid
     if (profilesSection) {
         profilesSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
